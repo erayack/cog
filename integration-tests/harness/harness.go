@@ -283,6 +283,17 @@ func (h *Harness) cmdCog(ts *testscript.TestScript, neg bool, args []string) {
 		return
 	}
 
+	// For commands that trigger a Docker build (build, push, run, train),
+	// inject --use-cog-base-image=false unless the test already specifies
+	// --use-cog-base-image. This prevents integration tests from depending
+	// on the live r8.im registry for cog base image resolution. Tests that
+	// explicitly need base image behavior (e.g. build_base_image_sha.txtar)
+	// already pass --use-cog-base-image and set COG_REGISTRY_HOST to a
+	// local test registry.
+	if len(args) > 0 && isBuildCommand(args[0]) && !hasFlag(args, "--use-cog-base-image") {
+		args = append(args, "--use-cog-base-image=false")
+	}
+
 	// Default: run cog command normally
 	expandedArgs := make([]string, len(args))
 	for i, arg := range args {
@@ -300,6 +311,28 @@ func (h *Harness) cmdCog(ts *testscript.TestScript, neg bool, args []string) {
 	if err != nil {
 		ts.Fatalf("cog command failed: %v", err)
 	}
+}
+
+// isBuildCommand returns true if the subcommand triggers a Docker image build
+// and therefore may attempt to resolve cog base images from the registry.
+func isBuildCommand(subcommand string) bool {
+	switch subcommand {
+	case "build", "push", "run", "train":
+		return true
+	default:
+		return false
+	}
+}
+
+// hasFlag checks whether any argument in args starts with the given flag name.
+// This handles both --flag=value and --flag value forms.
+func hasFlag(args []string, flag string) bool {
+	for _, arg := range args {
+		if arg == flag || strings.HasPrefix(arg, flag+"=") {
+			return true
+		}
+	}
+	return false
 }
 
 // Setup returns a testscript Setup function that configures the test environment.
@@ -407,6 +440,12 @@ func (h *Harness) cmdCogServe(ts *testscript.TestScript, neg bool, args []string
 	port, err := allocatePort()
 	if err != nil {
 		ts.Fatalf("failed to allocate port: %v", err)
+	}
+
+	// Inject --use-cog-base-image=false unless the test already specifies it.
+	// cog serve triggers a build internally that would otherwise contact r8.im.
+	if !hasFlag(args, "--use-cog-base-image") {
+		args = append(args, "--use-cog-base-image=false")
 	}
 
 	// Build command arguments
