@@ -290,8 +290,13 @@ func (h *Harness) cmdCog(ts *testscript.TestScript, neg bool, args []string) {
 	// explicitly need base image behavior (e.g. build_base_image_sha.txtar)
 	// already pass --use-cog-base-image and set COG_REGISTRY_HOST to a
 	// local test registry.
+	//
+	// The flag is inserted right after the subcommand (position 1) rather
+	// than appended, because commands like 'cog run' use SetInterspersed(false)
+	// — anything after the first positional arg is passed to the container
+	// command, not parsed as cog flags.
 	if len(args) > 0 && isBuildCommand(args[0]) && !hasFlag(args, "--use-cog-base-image") {
-		args = append(args, "--use-cog-base-image=false")
+		args = insertFlag(args, 1, "--use-cog-base-image=false")
 	}
 
 	// Default: run cog command normally
@@ -333,6 +338,16 @@ func hasFlag(args []string, flag string) bool {
 		}
 	}
 	return false
+}
+
+// insertFlag inserts a flag at the given position in an args slice,
+// shifting existing elements to the right. Returns a new slice.
+func insertFlag(args []string, pos int, flag string) []string {
+	result := make([]string, len(args)+1)
+	copy(result, args[:pos])
+	result[pos] = flag
+	copy(result[pos+1:], args[pos:])
+	return result
 }
 
 // Setup returns a testscript Setup function that configures the test environment.
