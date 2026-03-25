@@ -95,6 +95,9 @@ type Harness struct {
 	realHome string
 	// repoRoot is the path to the cog repository root
 	repoRoot string
+	// sharedRegistry is a local registry shared across all tests, used as a
+	// cache for cog-base images to avoid direct r8.im access during builds.
+	sharedRegistry *registryInfo
 	// serverProcs tracks background cog serve processes for cleanup, keyed by work directory
 	serverProcs   map[string]*serverInfo
 	serverProcsMu sync.Mutex
@@ -119,7 +122,7 @@ func New() (*Harness, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Harness{
+	h := &Harness{
 		CogBinary:      cogBinary,
 		realHome:       os.Getenv("HOME"),
 		repoRoot:       repoRoot,
@@ -127,7 +130,64 @@ func New() (*Harness, error) {
 		registries:     make(map[string]*registryInfo),
 		uploadServers:  make(map[string]*mockUploadServer),
 		webhookServers: make(map[string]*webhookServer),
-	}, nil
+	}
+
+	// Start a shared local registry for cog-base image caching.
+	// All tests use this registry via COG_REGISTRY_HOST (set in Setup),
+	// so cog build resolves base images locally instead of hitting r8.im.
+	container, cleanup, err := registry_testhelpers.StartTestRegistryWithCleanup(context.Background())
+	if err != nil {
+		return nil, fmt.Errorf("start shared registry: %w", err)
+	}
+	h.sharedRegistry = &registryInfo{
+		container: container,
+		cleanup:   cleanup,
+		host:      container.RegistryHost(),
+	}
+
+	// Seed cog-base images from r8.im into the shared registry if requested.
+	// In CI, COG_SEED_BASE_IMAGES=true triggers this. Locally, tests fall back
+	// gracefully when base images aren't found in the local registry.
+	if os.Getenv("COG_SEED_BASE_IMAGES") != "" {
+		h.seedBaseImages()
+	}
+
+	return h, nil
+}
+
+// Close cleans up the shared registry container.
+// Must be called when the harness is no longer needed.
+func (h *Harness) Close() {
+	if h.sharedRegistry != nil && h.sharedRegistry.cleanup != nil {
+		h.sharedRegistry.cleanup()
+	}
+}
+
+// seedBaseImages copies cog-base images listed in cog-base-tags.txt from r8.im
+// into the shared local registry. This is called once at harness startup when
+// COG_SEED_BASE_IMAGES is set (typically in CI).
+// Errors are logged but do not fail the harness — tests that need a missing
+// image will fall back via the auto-detect mechanism.
+func (h *Harness) seedBaseImages() {
+	tagsFile := filepath.Join(h.repoRoot, "integration-tests", "cog-base-tags.txt")
+	data, err := os.ReadFile(tagsFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not read %s: %v\n", tagsFile, err)
+		return
+	}
+
+	for line := range strings.SplitSeq(strings.TrimSpace(string(data)), "\n") {
+		tag := strings.TrimSpace(line)
+		if tag == "" || strings.HasPrefix(tag, "#") {
+			continue
+		}
+		src := "r8.im/cog-base:" + tag
+		dst := h.sharedRegistry.host + "/cog-base:" + tag
+		fmt.Fprintf(os.Stderr, "seeding cog-base image: %s -> %s\n", src, dst)
+		if err := crane.Copy(src, dst, crane.Insecure); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: failed to seed %s: %v\n", src, err)
+		}
+	}
 }
 
 // ResolveCogBinary finds the cog binary to use for tests.
@@ -324,14 +384,14 @@ func (h *Harness) Setup(env *testscript.Env) error {
 		}
 	}
 
-	// Redirect cog base image resolution from r8.im to GHCR to avoid
-	// depending on the live r8.im registry. GPU tests pull pre-built
-	// cog-base images from GHCR; CPU tests gracefully fall back to
-	// python:X.Y-slim when the base image isn't found on GHCR.
+	// Redirect cog base image resolution to the shared local registry.
+	// GPU tests get cog-base images that were seeded from r8.im at startup
+	// (when COG_SEED_BASE_IMAGES is set). CPU tests gracefully fall back to
+	// python:X.Y-slim when the base image isn't found in the local registry.
 	// Tests that need a specific registry (e.g. build_base_image_sha.txtar)
 	// override this by setting COG_REGISTRY_HOST in the txtar file.
 	if os.Getenv("COG_REGISTRY_HOST") == "" {
-		env.Setenv("COG_REGISTRY_HOST", "ghcr.io/replicate")
+		env.Setenv("COG_REGISTRY_HOST", h.sharedRegistry.host)
 	}
 
 	// Auto-detect wheels from dist/ if not explicitly set via env vars.

@@ -792,6 +792,7 @@ jobs:
           COG_BINARY: ./cog
           TEST_PARALLEL: 4
           BUILDKIT_PROGRESS: 'quiet'
+          COG_SEED_BASE_IMAGES: 'true'
         shell: bash
         run: |
           set -euo pipefail

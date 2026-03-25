@@ -1,0 +1,12 @@
+# Cog base image tags needed by GPU integration tests.
+# The harness seeds these from r8.im into the shared local registry
+# when COG_SEED_BASE_IMAGES=true (set in CI).
+#
+# Update this file when adding or modifying GPU integration tests.
+# Format: one tag per line (image name is always "cog-base").
+cuda11.8-python3.10
+cuda11.8-python3.12
+cuda11.8-python3.10-torch2.0.1
+cuda12.4-python3.12-torch2.5.1
+cuda12.6-python3.11-torch2.7.0
+cuda12.8-python3.12-torch2.7.1
