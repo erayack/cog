@@ -36,6 +36,7 @@ var propagatedEnvVars = []string{
 	"RUST_LOG",          // Rust logging control
 	"COG_CA_CERT",       // custom CA certificates (e.g. Cloudflare WARP)
 	"BUILDKIT_PROGRESS", // Docker build output format
+	"COG_REGISTRY_HOST", // registry host for cog base image resolution
 }
 
 // Harness provides utilities for running cog integration tests.
@@ -283,22 +284,6 @@ func (h *Harness) cmdCog(ts *testscript.TestScript, neg bool, args []string) {
 		return
 	}
 
-	// For commands that trigger a Docker build (build, push, run, train),
-	// inject --use-cog-base-image=false unless the test already specifies
-	// --use-cog-base-image. This prevents integration tests from depending
-	// on the live r8.im registry for cog base image resolution. Tests that
-	// explicitly need base image behavior (e.g. build_base_image_sha.txtar)
-	// already pass --use-cog-base-image and set COG_REGISTRY_HOST to a
-	// local test registry.
-	//
-	// The flag is inserted right after the subcommand (position 1) rather
-	// than appended, because commands like 'cog run' use SetInterspersed(false)
-	// — anything after the first positional arg is passed to the container
-	// command, not parsed as cog flags.
-	if len(args) > 0 && isBuildCommand(args[0]) && !hasFlag(args, "--use-cog-base-image") {
-		args = insertFlag(args, 1, "--use-cog-base-image=false")
-	}
-
 	// Default: run cog command normally
 	expandedArgs := make([]string, len(args))
 	for i, arg := range args {
@@ -316,38 +301,6 @@ func (h *Harness) cmdCog(ts *testscript.TestScript, neg bool, args []string) {
 	if err != nil {
 		ts.Fatalf("cog command failed: %v", err)
 	}
-}
-
-// isBuildCommand returns true if the subcommand triggers a Docker image build
-// and therefore may attempt to resolve cog base images from the registry.
-func isBuildCommand(subcommand string) bool {
-	switch subcommand {
-	case "build", "push", "run", "train":
-		return true
-	default:
-		return false
-	}
-}
-
-// hasFlag checks whether any argument in args starts with the given flag name.
-// This handles both --flag=value and --flag value forms.
-func hasFlag(args []string, flag string) bool {
-	for _, arg := range args {
-		if arg == flag || strings.HasPrefix(arg, flag+"=") {
-			return true
-		}
-	}
-	return false
-}
-
-// insertFlag inserts a flag at the given position in an args slice,
-// shifting existing elements to the right. Returns a new slice.
-func insertFlag(args []string, pos int, flag string) []string {
-	result := make([]string, len(args)+1)
-	copy(result, args[:pos])
-	result[pos] = flag
-	copy(result[pos+1:], args[pos:])
-	return result
 }
 
 // Setup returns a testscript Setup function that configures the test environment.
@@ -369,6 +322,16 @@ func (h *Harness) Setup(env *testscript.Env) error {
 		if val := os.Getenv(key); val != "" {
 			env.Setenv(key, val)
 		}
+	}
+
+	// Redirect cog base image resolution from r8.im to GHCR to avoid
+	// depending on the live r8.im registry. GPU tests pull pre-built
+	// cog-base images from GHCR; CPU tests gracefully fall back to
+	// python:X.Y-slim when the base image isn't found on GHCR.
+	// Tests that need a specific registry (e.g. build_base_image_sha.txtar)
+	// override this by setting COG_REGISTRY_HOST in the txtar file.
+	if os.Getenv("COG_REGISTRY_HOST") == "" {
+		env.Setenv("COG_REGISTRY_HOST", "ghcr.io/replicate")
 	}
 
 	// Auto-detect wheels from dist/ if not explicitly set via env vars.
@@ -455,12 +418,6 @@ func (h *Harness) cmdCogServe(ts *testscript.TestScript, neg bool, args []string
 	port, err := allocatePort()
 	if err != nil {
 		ts.Fatalf("failed to allocate port: %v", err)
-	}
-
-	// Inject --use-cog-base-image=false unless the test already specifies it.
-	// cog serve triggers a build internally that would otherwise contact r8.im.
-	if !hasFlag(args, "--use-cog-base-image") {
-		args = append(args, "--use-cog-base-image=false")
 	}
 
 	// Build command arguments
