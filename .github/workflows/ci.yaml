@@ -757,6 +757,7 @@ jobs:
         image: registry:3
         ports:
           - 5000:5000
+        options: --log-driver none
     strategy:
       fail-fast: false
       matrix:
