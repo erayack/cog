@@ -750,6 +750,13 @@ jobs:
       (needs.build-rust.result == 'success' || needs.build-rust.result == 'skipped')
     runs-on: ubuntu-latest-16-cores
     timeout-minutes: 30
+    # Local registry service container for cog-base image caching.
+    # Seeded from r8.im before tests run so integration tests never hit r8.im directly.
+    services:
+      registry:
+        image: registry:3
+        ports:
+          - 5000:5000
     strategy:
       fail-fast: false
       matrix:
@@ -781,6 +788,20 @@ jobs:
       # gotestsum via Go module proxy (not GitHub Releases) for reliability
       - name: Install gotestsum
         run: go install gotest.tools/gotestsum@v1.13.0
+      - name: Install crane
+        run: go install github.com/google/go-containerregistry/cmd/crane@v0.21.1
+      - name: Seed cog-base images into local registry
+        run: |
+          # Copy cog-base images from r8.im into the local service container registry.
+          # This runs once per shard before tests start. Failures are warnings —
+          # tests that need a missing image will fall back via auto-detect.
+          while IFS= read -r tag; do
+            tag=$(echo "$tag" | xargs)  # trim whitespace
+            [[ -z "$tag" || "$tag" == \#* ]] && continue
+            echo "Seeding r8.im/cog-base:$tag -> localhost:5000/cog-base:$tag"
+            crane copy "r8.im/cog-base:$tag" "localhost:5000/cog-base:$tag" --insecure || \
+              echo "::warning::Failed to seed cog-base:$tag"
+          done < integration-tests/cog-base-tags.txt
       - name: Set wheel environment
         run: |
           # Use locally-built wheels, not PyPI (version may not be published yet)
@@ -792,7 +813,7 @@ jobs:
           COG_BINARY: ./cog
           TEST_PARALLEL: 4
           BUILDKIT_PROGRESS: 'quiet'
-          COG_SEED_BASE_IMAGES: 'true'
+          COG_REGISTRY_HOST: 'localhost:5000'
         shell: bash
         run: |
           set -euo pipefail
