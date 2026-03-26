@@ -1,9 +1,9 @@
 # Test that base image SHA is recorded in labels with --use-cog-base-image
 # Source: test_build.py::test_build_base_image_sha
 #
-# Uses the shared local registry (seeded with cog-base images in CI).
+# Resolves cog-base images from GHCR via COG_REGISTRY_HOST (set in CI).
 
-# Build with --use-cog-base-image flag against the local registry
+# Build with --use-cog-base-image flag
 cog build -t $TEST_IMAGE --use-cog-base-image
 
 # Verify the base image layer label matches one of the actual layers
