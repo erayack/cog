@@ -1,6 +1,8 @@
-# Cog base image tags seeded from r8.im into the local registry in CI.
-# This avoids all integration tests depending on r8.im or Docker Hub directly.
+# Cog base image tags mirrored from r8.im to ghcr.io/replicate/cog/cog-base.
+# CI sets COG_REGISTRY_HOST=ghcr.io/replicate/cog so integration tests resolve
+# base images from GHCR instead of r8.im.
 #
+# To mirror images, run the "Mirror cog-base images" workflow from the Actions tab.
 # Update this file when adding integration tests with new Python versions,
 # CUDA versions, or torch versions.
 # Format: one tag per line (image name is always "cog-base").
