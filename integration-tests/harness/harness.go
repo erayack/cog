@@ -95,9 +95,6 @@ type Harness struct {
 	realHome string
 	// repoRoot is the path to the cog repository root
 	repoRoot string
-	// sharedRegistry is a local registry shared across all tests, used as a
-	// cache for cog-base images to avoid direct r8.im access during builds.
-	sharedRegistry *registryInfo
 	// serverProcs tracks background cog serve processes for cleanup, keyed by work directory
 	serverProcs   map[string]*serverInfo
 	serverProcsMu sync.Mutex
@@ -122,7 +119,7 @@ func New() (*Harness, error) {
 	if err != nil {
 		return nil, err
 	}
-	h := &Harness{
+	return &Harness{
 		CogBinary:      cogBinary,
 		realHome:       os.Getenv("HOME"),
 		repoRoot:       repoRoot,
@@ -130,34 +127,7 @@ func New() (*Harness, error) {
 		registries:     make(map[string]*registryInfo),
 		uploadServers:  make(map[string]*mockUploadServer),
 		webhookServers: make(map[string]*webhookServer),
-	}
-
-	// When COG_REGISTRY_HOST is not already set (e.g. local dev without CI),
-	// start a shared local registry so cog-base lookups get a fast 404 and
-	// fall back gracefully, instead of hanging on r8.im timeouts.
-	// In CI, COG_REGISTRY_HOST is set to the GHA service container (localhost:5000),
-	// so the harness skips starting its own registry.
-	if os.Getenv("COG_REGISTRY_HOST") == "" {
-		container, cleanup, err := registry_testhelpers.StartTestRegistryWithCleanup(context.Background())
-		if err != nil {
-			return nil, fmt.Errorf("start shared registry: %w", err)
-		}
-		h.sharedRegistry = &registryInfo{
-			container: container,
-			cleanup:   cleanup,
-			host:      container.RegistryHost(),
-		}
-	}
-
-	return h, nil
-}
-
-// Close cleans up the shared registry container (if one was started).
-// Must be called when the harness is no longer needed.
-func (h *Harness) Close() {
-	if h.sharedRegistry != nil && h.sharedRegistry.cleanup != nil {
-		h.sharedRegistry.cleanup()
-	}
+	}, nil
 }
 
 // ResolveCogBinary finds the cog binary to use for tests.
@@ -354,17 +324,11 @@ func (h *Harness) Setup(env *testscript.Env) error {
 		}
 	}
 
-	// Redirect cog base image resolution to a local registry to avoid
-	// depending on the live r8.im registry.
-	// - In CI: COG_REGISTRY_HOST is set to a GHA service container (localhost:5000)
-	//   that was pre-seeded with cog-base images from r8.im.
-	// - Locally: the harness started a shared registry in New(); lookups get a
-	//   fast 404 and fall back to python:X.Y-slim or nvidia/cuda.
-	// Tests that need a specific registry (e.g. build_base_image_sha.txtar)
+	// In CI, COG_REGISTRY_HOST is set to ghcr.io/replicate/cog so tests
+	// resolve cog-base images from GHCR (mirrored from r8.im) instead of
+	// hitting r8.im directly. The env var is propagated via propagatedEnvVars.
+	// Tests that need a specific registry (e.g. oci_bundle_push.txtar)
 	// override this by setting COG_REGISTRY_HOST in the txtar file.
-	if os.Getenv("COG_REGISTRY_HOST") == "" && h.sharedRegistry != nil {
-		env.Setenv("COG_REGISTRY_HOST", h.sharedRegistry.host)
-	}
 
 	// Auto-detect wheels from dist/ if not explicitly set via env vars.
 	// CI sets these env vars; locally we need to find them ourselves.

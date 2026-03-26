@@ -39,7 +39,6 @@ func TestIntegration(t *testing.T) {
 
 	h, err := harness.New()
 	require.NoError(t, err, "failed to create harness")
-	defer h.Close()
 
 	files, err := filepath.Glob(filepath.Join(dir, "*.txtar"))
 	require.NoError(t, err)
